@@ -1,0 +1,29 @@
+---
+
+root_cert_filename: developer
+root_cert_keydir: /etc/ssl
+root_cert_owner: root
+root_cert_group: root
+root_cert_mode: "0600"
+root_cert_fetch: true
+
+root_cert_clients_p12: false
+root_cert_clients_p12_pass: secmypass
+root_cert_clients: []
+
+root_cert_dhparam: false
+root_cert_dhparam_size: 2048
+
+root_cert_distinguished: req_distinguished_name
+#root_cert_distinguished: cn_only
+root_cert_key_size: 4096
+root_cert_key_days: 365
+root_cert_cn: lan
+root_cert_country: AU
+root_cert_province: Some-State
+root_cert_city: Dubbo
+root_cert_org: "Developer root cert"
+root_cert_email: root@gmail.com
+
+# root_cert_ca_data:
+# root_cert_data:

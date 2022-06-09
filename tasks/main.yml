@@ -1,0 +1,152 @@
+---
+
+# Need fix
+# - name: Ensure ssl folder exist
+#   file:
+#     path: "{{ root_cert_keydir }}"
+#     state: directory
+#     owner: "{{ root_cert_owner }}"
+#     group: "{{ root_cert_group }}"
+#     mode: "0700"
+#   tags:
+#     - ssl-certs
+
+- name: Create openssl.cnf file
+  template: src=openssl.cnf.j2 dest={{ root_cert_keydir }}/{{ root_cert_filename }}.cnf mode=0400
+  tags: [ssl-certs]
+
+- name: Copy SSL certificate data to server
+  copy:
+    content: "{{ item.content }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ root_cert_owner }}"
+    group: "{{ root_cert_group }}"
+    mode: 0400
+  when: root_cert_ca_data is defined and root_cert_data is defined
+  with_items:
+    - { content: "{{ root_cert_data|default('') }}",      dest: "{{ root_cert_keydir }}/{{ root_cert_filename }}.key" }
+    - { content: "{{ root_cert_ca_data|default('') }}",   dest: "{{ root_cert_keydir }}/{{ root_cert_filename }}.crt" }
+  no_log: true
+  tags: [ssl-certs]
+
+- name: Generate CA key
+  command: openssl req -x509 -nodes -new -keyout {{ root_cert_filename }}.key -out {{ root_cert_filename }}.crt -days 7300 -config {{ root_cert_filename }}.cnf
+    chdir="{{ root_cert_keydir }}"
+    creates="{{ root_cert_filename }}.key"
+  environment:
+    KEY_HOST: "{{ root_cert_cn }}"
+    KEY_O: "{{ root_cert_org }}"
+  tags: [ssl-certs]
+
+- name: Protect server keys
+  file: path="{{ root_cert_keydir }}/{{ item }}" mode=0400
+  with_items:
+    - "{{ root_cert_filename }}.crt"
+    - "{{ root_cert_filename }}.key"
+  ignore_errors: yes
+  tags: [ssl-certs]
+
+- name: Fetch certs to local
+  fetch: src={{ item.src }} dest={{ item.dest }} flat=yes
+  with_items:
+    - { src: "{{ root_cert_keydir }}/{{ root_cert_filename }}.crt",      dest: "{{ playbook_dir }}/files/ssl/{{ root_cert_filename }}.crt" }
+    - { src: "{{ root_cert_keydir }}/{{ root_cert_filename }}.key",      dest: "{{ playbook_dir }}/files/ssl/{{ root_cert_filename }}.key" }
+  when: root_cert_fetch
+  tags: [ssl-certs]
+
+- copy:
+    content: "{{ item.content }}"
+    dest: "/tmp/{{ item.file }}"
+    mode: 0640
+    force: yes
+  with_items:
+    - { file: "serial", content: "01" }
+    - { file: "index.txt", content: "" }
+  tags: [ssl-certs]
+
+- name: Ensure ssl folder exist
+  file:
+    path: "{{ root_cert_keydir }}/{{ item }}"
+    state: directory
+    mode: "0700"
+  with_items:
+    - "{{ root_cert_clients }}"
+  when: root_cert_clients is defined
+  tags: [ssl-certs]
+
+- name: Generate Clients CA keys
+  command: openssl req -nodes -new -keyout {{ item }}.key -out {{ item }}.csr -days {{ root_cert_key_days }} -config {{ root_cert_keydir }}/{{ root_cert_filename }}.cnf
+    chdir="{{ root_cert_keydir }}/{{ item }}"
+    creates={{ item }}.key
+  environment:
+    KEY_HOST: "{{ item }}"
+    KEY_O: "{{ root_cert_org }}"
+  with_items:
+    - "{{ root_cert_clients }}"
+  when: root_cert_clients is defined
+  tags: [ssl-certs]
+
+- name: Sign Clients keys
+  command: openssl ca -batch -days {{ root_cert_key_days }} -out {{ item }}/{{ item }}.pem -in {{ item }}/{{ item }}.csr -config {{ root_cert_keydir }}/{{ root_cert_filename }}.cnf
+    chdir="{{ root_cert_keydir }}"
+    creates={{ item }}/{{ item }}.pem
+  environment:
+    KEY_HOST: "{{ item }}"
+    KEY_O: "Developer"
+  with_items:
+    - "{{ root_cert_clients }}"
+  when: root_cert_clients is defined
+  tags: [ssl-certs]
+
+- name: Make Clients p12
+  command: openssl pkcs12 -export -out {{ item }}/{{ item }}.p12 -inkey {{ item }}/{{ item }}.key -in {{ item }}/{{ item }}.pem -passout env:PASSWD
+    chdir="{{ root_cert_keydir }}"
+    creates={{ item }}/{{ item }}.p12
+  environment:
+    PASSWD: "{{ root_cert_clients_p12_pass }}"
+  with_items:
+    - "{{ root_cert_clients }}"
+  when: root_cert_clients is defined and root_cert_clients_p12
+  tags: [ssl-certs]
+
+- name: Create full pem file
+  copy:
+    src: "{{ root_cert_keydir }}/{{ item }}/{{ item }}.pem"
+    dest: "{{ root_cert_keydir }}/{{ item }}/{{ item }}.pem.full"
+    remote_src: yes
+    force: no
+  with_items:
+    - "{{ root_cert_clients }}"
+  when: root_cert_clients is defined
+  tags: [ssl-certs]
+
+- name: Change pem file ownership
+  file: path={{ root_cert_keydir }}/{{ item[0] }}/{{ item[0] }}.{{ item[1] }} owner={{ root_cert_owner }} group={{ root_cert_group }} mode={{ root_cert_mode }}
+  with_nested:
+    - "{{ root_cert_clients }}"
+    - ["pem","pem.full","key","p12"]
+  ignore_errors: yes
+  when: root_cert_clients is defined
+  tags: [ssl-certs]
+
+- name: Remove Clients CA Req
+  file: path="{{ root_cert_keydir }}/{{ item }}/{{ item }}.csr" state="absent"
+  with_items:
+    - "{{ root_cert_clients }}"
+  when: root_cert_clients is defined
+  tags: [ssl-certs]
+
+- name: Generate strong DHE parameter - https://weakdh.org/
+  command: openssl dhparam -out {{ root_cert_keydir }}/{{ item }}/dhparam.pem {{ root_cert_dhparam_size }} creates={{ root_cert_keydir }}/{{ item }}/dhparam.pem
+  no_log: true
+  with_items:
+    - "{{ root_cert_clients }}"
+  when: root_cert_clients is defined and root_cert_dhparam
+  tags: [ssl-certs]
+
+- name: DHE file ownership
+  file: path={{ root_cert_keydir }}/{{ item }}/dhparam.pem owner={{ root_cert_owner }} group={{ root_cert_group }} mode={{ root_cert_mode }}
+  with_items:
+    - "{{ root_cert_clients }}"
+  when: root_cert_clients is defined and root_cert_dhparam
+  tags: [ssl-certs]
